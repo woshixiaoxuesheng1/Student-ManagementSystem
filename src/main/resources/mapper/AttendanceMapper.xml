@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdzx.student.mapper.AttendanceMapper">
+
+  <sql id="attStat">
+    att_stat AS (
+      SELECT a.student_id,
+             SUM(a.status = '出勤') AS present,
+             SUM(a.status = '迟到') AS late,
+             SUM(a.status = '缺勤') AS absent,
+             SUM(a.status = '请假') AS leave_cnt
+      FROM attendance_record a
+      GROUP BY a.student_id
+    )
+  </sql>
+
+  <sql id="dayFilters">
+    <where>
+      s.status = '在读'
+      <include refid="scope"/>
+      <if test="grade != null and grade != '' and grade != '全部'">AND c.grade = #{grade}</if>
+      <if test="classId != null and classId != '' and classId != '全部'">AND s.class_id = #{classId}</if>
+      <if test="keyword != null and keyword != ''">
+        AND (s.name LIKE CONCAT('%', #{keyword}, '%') OR s.sid LIKE CONCAT('%', #{keyword}, '%'))
+      </if>
+      <if test="abnormalOnly">AND COALESCE(day.status, '出勤') &lt;&gt; '出勤'</if>
+    </where>
+  </sql>
+
+  <sql id="scope">
+    <if test="classIds != null">
+      <choose>
+        <when test="classIds.isEmpty()">AND 1 = 0</when>
+        <otherwise>
+          AND s.class_id IN
+          <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+        </otherwise>
+      </choose>
+    </if>
+  </sql>
+
+  <select id="selectDayPage" resultType="com.mdzx.student.mapper.model.AttendanceRow">
+    WITH <include refid="attStat"/>
+    SELECT s.id, s.sid, s.name, s.gender, c.grade, s.class_id, c.class_name,
+           COALESCE(day.status, '出勤') AS day_status,
+           COALESCE(att.present, 0) AS present,
+           COALESCE(att.late, 0) AS late,
+           COALESCE(att.absent, 0) AS absent,
+           COALESCE(att.leave_cnt, 0) AS `leave`
+    FROM student s
+    JOIN class_info c ON c.class_id = s.class_id
+    LEFT JOIN att_stat att ON att.student_id = s.id
+    LEFT JOIN attendance_record day ON day.student_id = s.id AND day.attend_date = #{date}
+    <include refid="dayFilters"/>
+    ORDER BY s.sid
+  </select>
+
+  <!-- 未标记的学生按「出勤」计入，与前端默认口径一致 -->
+  <select id="selectDaySummary" resultType="com.mdzx.student.mapper.model.AttendanceStatRow">
+    SELECT COALESCE(SUM(COALESCE(day.status, '出勤') = '出勤'), 0) AS present,
+           COALESCE(SUM(COALESCE(day.status, '出勤') = '迟到'), 0) AS late,
+           COALESCE(SUM(COALESCE(day.status, '出勤') = '缺勤'), 0) AS absent,
+           COALESCE(SUM(COALESCE(day.status, '出勤') = '请假'), 0) AS `leave`
+    FROM student s
+    JOIN class_info c ON c.class_id = s.class_id
+    LEFT JOIN attendance_record day ON day.student_id = s.id AND day.attend_date = #{date}
+    <where>
+      s.status = '在读'
+      <include refid="scope"/>
+      <if test="grade != null and grade != '' and grade != '全部'">AND c.grade = #{grade}</if>
+      <if test="classId != null and classId != '' and classId != '全部'">AND s.class_id = #{classId}</if>
+    </where>
+  </select>
+
+  <select id="countMarked" resultType="long">
+    SELECT COUNT(*) FROM attendance_record WHERE attend_date = #{date}
+  </select>
+
+  <select id="selectStatsByStudentIds" resultType="com.mdzx.student.mapper.model.AttendanceStatRow">
+    SELECT student_id,
+           SUM(status = '出勤') AS present,
+           SUM(status = '迟到') AS late,
+           SUM(status = '缺勤') AS absent,
+           SUM(status = '请假') AS `leave`
+    FROM attendance_record
+    WHERE student_id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    GROUP BY student_id
+  </select>
+
+  <select id="selectStatsByStudentId" resultType="com.mdzx.student.mapper.model.AttendanceStatRow">
+    SELECT student_id,
+           SUM(status = '出勤') AS present,
+           SUM(status = '迟到') AS late,
+           SUM(status = '缺勤') AS absent,
+           SUM(status = '请假') AS `leave`
+    FROM attendance_record
+    WHERE student_id = #{studentId}
+    GROUP BY student_id
+  </select>
+
+  <select id="selectRecentRecords" resultType="com.mdzx.student.domain.AttendanceRecord">
+    SELECT id, student_id, attend_date, status, remark
+    FROM attendance_record
+    WHERE student_id = #{studentId}
+    ORDER BY attend_date DESC
+    LIMIT #{size}
+  </select>
+
+  <select id="selectWeeklyTrend" resultType="com.mdzx.student.mapper.model.TrendRow">
+    SELECT DATE_FORMAT(MIN(a.attend_date), '%x-%v') AS week_key,
+           MIN(a.attend_date) AS start_date,
+           SUM(a.status IN ('出勤', '迟到')) / COUNT(*) AS rate
+    FROM attendance_record a
+    JOIN student s ON s.id = a.student_id
+    JOIN class_info c ON c.class_id = s.class_id
+    WHERE s.status = '在读'
+      AND a.attend_date BETWEEN #{startDate} AND #{endDate}
+      <include refid="scope"/>
+      <if test="grade != null and grade != '' and grade != '全部'">AND c.grade = #{grade}</if>
+      <if test="classId != null and classId != '' and classId != '全部'">AND s.class_id = #{classId}</if>
+    GROUP BY YEARWEEK(a.attend_date, 1)
+    ORDER BY MIN(a.attend_date)
+  </select>
+
+  <insert id="upsert">
+    INSERT INTO attendance_record (student_id, attend_date, status, remark)
+    VALUES (#{studentId}, #{date}, #{status}, #{remark})
+    ON DUPLICATE KEY UPDATE status = VALUES(status), remark = VALUES(remark)
+  </insert>
+
+  <insert id="batchUpsert">
+    INSERT INTO attendance_record (student_id, attend_date, status)
+    VALUES
+    <foreach collection="list" item="item" separator=",">
+      (#{item.studentId}, #{date}, #{item.status})
+    </foreach>
+    ON DUPLICATE KEY UPDATE status = VALUES(status)
+  </insert>
+
+  <delete id="deleteAll">
+    DELETE FROM attendance_record
+  </delete>
+
+  <select id="countAll" resultType="long">
+    SELECT COUNT(*) FROM attendance_record
+  </select>
+</mapper>

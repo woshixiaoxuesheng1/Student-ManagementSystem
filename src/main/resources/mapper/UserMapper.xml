@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdzx.student.mapper.UserMapper">
+
+  <!-- 账号及负责班级的持久化查询；负责班级关系决定班主任的数据范围。 -->
+
+  <sql id="userColumns">
+    id, username, password, real_name, role, phone, enabled, last_login_at, created_at, updated_at
+  </sql>
+
+  <select id="selectByUsername" resultType="com.mdzx.student.domain.SysUser">
+    SELECT <include refid="userColumns"/> FROM sys_user WHERE username = #{username}
+  </select>
+
+  <select id="selectById" resultType="com.mdzx.student.domain.SysUser">
+    SELECT <include refid="userColumns"/> FROM sys_user WHERE id = #{id}
+  </select>
+
+  <select id="selectAll" resultType="com.mdzx.student.domain.SysUser">
+    SELECT <include refid="userColumns"/> FROM sys_user ORDER BY id
+  </select>
+
+  <select id="selectClassIdsByUserIds" resultType="string">
+    SELECT CONCAT(user_id, ':', class_id) FROM sys_user_class
+    WHERE user_id IN
+    <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+    ORDER BY user_id, class_id
+  </select>
+
+  <insert id="insert" parameterType="com.mdzx.student.domain.SysUser"
+          useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO sys_user (username, password, real_name, role, phone, enabled)
+    VALUES (#{username}, #{password}, #{realName}, #{role}, #{phone}, #{enabled})
+  </insert>
+
+  <insert id="insertUserClasses">
+    INSERT INTO sys_user_class (user_id, class_id) VALUES
+    <foreach collection="classIds" item="classId" separator=",">
+      (#{userId}, #{classId})
+    </foreach>
+  </insert>
+
+  <update id="updateLastLogin">
+    UPDATE sys_user SET last_login_at = NOW() WHERE id = #{id}
+  </update>
+
+  <select id="countAll" resultType="long">
+    SELECT COUNT(*) FROM sys_user
+  </select>
+</mapper>

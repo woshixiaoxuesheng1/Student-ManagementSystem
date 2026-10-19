@@ -1,0 +1,38 @@
+
+# Maven 编译产物
+target/
+**/target/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# Java 编译文件
+*.class
+
+# 日志
+*.log
+logs/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 本地环境变量及敏感配置
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.yaml
+
+# 临时文件
+*.tmp
+*.bak

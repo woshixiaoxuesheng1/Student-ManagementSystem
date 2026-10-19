@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdzx.student.mapper.ClassMapper">
+
+  <!-- 班级查询统一应用年级筛选和班级数据范围，供列表、统计及权限校验复用。 -->
+
+  <sql id="selectAllSql">
+    SELECT class_id, class_name, grade, grade_index, class_no, head_teacher, capacity
+    FROM class_info
+    <where>
+      <if test="grade != null and grade != '' and grade != '全部'">grade = #{grade}</if>
+      <if test="classIds != null">
+        <choose>
+          <when test="classIds.isEmpty()">AND 1 = 0</when>
+          <otherwise>
+            AND class_id IN
+            <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+          </otherwise>
+        </choose>
+      </if>
+    </where>
+    ORDER BY grade_index, class_no
+  </sql>
+
+  <select id="selectAll" resultType="com.mdzx.student.domain.ClassInfo">
+    <include refid="selectAllSql"/>
+  </select>
+
+  <select id="selectById" resultType="com.mdzx.student.domain.ClassInfo">
+    SELECT class_id, class_name, grade, grade_index, class_no, head_teacher, capacity
+    FROM class_info WHERE class_id = #{classId}
+  </select>
+
+  <select id="selectAggregates" resultType="com.mdzx.student.mapper.model.ClassAggRow">
+    WITH totals AS (
+      SELECT s.id AS student_id, COALESCE(SUM(sc.score), 0) AS total
+      FROM student s
+      LEFT JOIN student_score sc ON sc.student_id = s.id
+      GROUP BY s.id
+    ),
+    att_stat AS (
+      SELECT a.student_id,
+             SUM(a.status = '出勤') AS present,
+             SUM(a.status = '迟到') AS late,
+             SUM(a.status = '缺勤') AS absent,
+             SUM(a.status = '请假') AS leave_cnt
+      FROM attendance_record a
+      GROUP BY a.student_id
+    )
+    SELECT c.class_id,
+           COUNT(s.id) AS total_count,
+           COALESCE(SUM(s.status = '在读'), 0) AS active_count,
+           AVG(CASE WHEN s.status = '在读' THEN t.total END) AS avg_total,
+           AVG(CASE WHEN s.status = '在读' THEN
+                 (a.present + a.late) / NULLIF(a.present + a.late + a.absent + a.leave_cnt, 0) END) AS avg_rate
+    FROM class_info c
+    LEFT JOIN student s ON s.class_id = c.class_id
+    LEFT JOIN totals t ON t.student_id = s.id
+    LEFT JOIN att_stat a ON a.student_id = s.id
+    <if test="classIds != null">
+      <choose>
+        <when test="classIds.isEmpty()">WHERE 1 = 0</when>
+        <otherwise>
+          WHERE c.class_id IN
+          <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+        </otherwise>
+      </choose>
+    </if>
+    GROUP BY c.class_id
+  </select>
+
+  <select id="selectTopStudents" resultType="com.mdzx.student.mapper.model.StudentBriefRow">
+    WITH totals AS (
+      SELECT s.id AS student_id, COALESCE(SUM(sc.score), 0) AS total
+      FROM student s
+      LEFT JOIN student_score sc ON sc.student_id = s.id
+      GROUP BY s.id
+    ),
+    ranked AS (
+      SELECT s.id, s.sid, s.name, s.class_id, t.total,
+             ROW_NUMBER() OVER (PARTITION BY s.class_id ORDER BY t.total DESC, s.sid ASC) AS rn
+      FROM student s
+      JOIN totals t ON t.student_id = s.id
+      WHERE s.status = '在读'
+    )
+    SELECT class_id, id, sid, name, total
+    FROM ranked
+    WHERE rn = 1
+    <if test="classIds != null">
+      <choose>
+        <when test="classIds.isEmpty()">AND 1 = 0</when>
+        <otherwise>
+          AND class_id IN
+          <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+        </otherwise>
+      </choose>
+    </if>
+  </select>
+
+  <insert id="insert" parameterType="com.mdzx.student.domain.ClassInfo">
+    INSERT INTO class_info (class_id, class_name, grade, grade_index, class_no, head_teacher, capacity)
+    VALUES (#{classId}, #{className}, #{grade}, #{gradeIndex}, #{classNo}, #{headTeacher}, #{capacity})
+  </insert>
+
+  <update id="updateCapacity">
+    UPDATE class_info SET capacity = #{capacity} WHERE class_id = #{classId}
+  </update>
+</mapper>

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdzx.student.mapper.ScoreMapper">
+
+  <!-- 成绩按学生和学科读写；批量 upsert 用于一次保存多名学生或多门成绩。 -->
+
+  <select id="selectByStudentIds" resultType="com.mdzx.student.domain.StudentScore">
+    SELECT student_id, subject_key, score
+    FROM student_score
+    WHERE student_id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </select>
+
+  <select id="selectByStudentId" resultType="com.mdzx.student.domain.StudentScore">
+    SELECT student_id, subject_key, score
+    FROM student_score
+    WHERE student_id = #{studentId}
+  </select>
+
+  <insert id="upsert" parameterType="com.mdzx.student.domain.StudentScore">
+    INSERT INTO student_score (student_id, subject_key, score)
+    VALUES (#{studentId}, #{subjectKey}, #{score})
+    ON DUPLICATE KEY UPDATE score = VALUES(score)
+  </insert>
+
+  <insert id="batchUpsert">
+    INSERT INTO student_score (student_id, subject_key, score)
+    VALUES
+    <foreach collection="list" item="item" separator=",">
+      (#{item.studentId}, #{item.subjectKey}, #{item.score})
+    </foreach>
+    ON DUPLICATE KEY UPDATE score = VALUES(score)
+  </insert>
+
+  <delete id="deleteByStudentId">
+    DELETE FROM student_score WHERE student_id = #{studentId}
+  </delete>
+
+  <delete id="deleteAll">
+    DELETE FROM student_score
+  </delete>
+</mapper>

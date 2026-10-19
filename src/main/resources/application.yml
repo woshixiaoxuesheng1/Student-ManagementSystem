@@ -1,0 +1,52 @@
+server:
+  # 后端 HTTP 服务监听端口
+  port: 8080
+
+spring:
+  application:
+    name: student-management-api
+  datasource:
+    # 本地开发数据库连接；部署时可按运行环境调整连接地址和凭据
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/student_management?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: "123456"
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+
+mybatis:
+  # Mapper XML 与实体字段映射配置
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.mdzx.student.domain
+  configuration:
+    map-underscore-to-camel-case: true
+    default-fetch-size: 100
+    default-statement-timeout: 15
+
+logging:
+  level:
+    com.mdzx.student.mapper: info
+    org.springframework.security: warn
+
+# 登录令牌配置：生产环境请用环境变量覆盖 secret
+auth:
+  jwt:
+    # 生产环境通过 AUTH_JWT_SECRET 注入独立密钥
+    secret: ${AUTH_JWT_SECRET:mdzx-student-management-demo-secret-key-please-change-in-production}
+    # 令牌有效时长，以小时为单位
+    expire-hours: 12
+    issuer: student-management-api
+
+# 演示数据：启动时若 student 表为空，自动生成 288 条学籍记录
+demo:
+  # 学生表为空时是否自动生成演示数据，以及生成规模
+  auto-init: true
+  students-per-class: 24
+  school-days: 62

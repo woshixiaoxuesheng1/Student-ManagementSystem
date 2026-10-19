@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdzx.student.mapper.StudentMapper">
+
+  <!--
+    总分 / 年级排名 / 考勤累计都用 CTE 现算，不落库，避免缓存与源数据不一致。
+    这里有意的重复：MyBatis 的跨 namespace include 依赖解析顺序，容易踩坑，
+    所以 ClassMapper.xml 里保留了一份同样口径的 CTE。
+  -->
+  <sql id="cte">
+    totals AS (
+      SELECT s.id AS student_id, COALESCE(SUM(sc.score), 0) AS total
+      FROM student s
+      LEFT JOIN student_score sc ON sc.student_id = s.id
+      GROUP BY s.id
+    ),
+    ranked AS (
+      SELECT t.student_id, t.total,
+             RANK() OVER (PARTITION BY c.grade ORDER BY t.total DESC) AS grade_rank
+      FROM totals t
+      JOIN student s ON s.id = t.student_id
+      JOIN class_info c ON c.class_id = s.class_id
+    ),
+    att_stat AS (
+      SELECT a.student_id,
+             SUM(a.status = '出勤') AS present,
+             SUM(a.status = '迟到') AS late,
+             SUM(a.status = '缺勤') AS absent,
+             SUM(a.status = '请假') AS leave_cnt
+      FROM attendance_record a
+      GROUP BY a.student_id
+    )
+  </sql>
+
+  <sql id="columns">
+    s.id, s.sid, s.name, s.gender, s.status, s.phone, s.guardian, s.guardian_relation,
+    s.guardian_phone, s.birthday, s.enrollment_date, s.address, s.dorm, s.note,
+    c.class_id, c.class_name, c.grade, c.grade_index, c.class_no,
+    r.total, r.grade_rank,
+    COALESCE(a.present, 0) AS present,
+    COALESCE(a.late, 0) AS late,
+    COALESCE(a.absent, 0) AS absent,
+    COALESCE(a.leave_cnt, 0) AS `leave`
+  </sql>
+
+  <sql id="joins">
+    FROM student s
+    JOIN class_info c ON c.class_id = s.class_id
+    JOIN ranked r ON r.student_id = s.id
+    LEFT JOIN att_stat a ON a.student_id = s.id
+  </sql>
+
+  <!-- 仅成绩页按单科排序时需要额外 join，所以单独一份，避免其他语句缺参 -->
+  <sql id="joinsForSort">
+    <include refid="joins"/>
+    <if test="subjectKey != null">
+      LEFT JOIN student_score sc_sort ON sc_sort.student_id = s.id AND sc_sort.subject_key = #{subjectKey}
+    </if>
+  </sql>
+
+  <!-- 班主任数据范围：classIds 为 null 表示不限（管理员 / 只读账号） -->
+  <sql id="scope">
+    <if test="classIds != null">
+      <choose>
+        <when test="classIds.isEmpty()">AND 1 = 0</when>
+        <otherwise>
+          AND s.class_id IN
+          <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+        </otherwise>
+      </choose>
+    </if>
+  </sql>
+
+  <!-- 成绩页的筛选：只统计在读学生 -->
+  <sql id="gradeFilters">
+    <where>
+      s.status = '在读'
+      <include refid="scope"/>
+      <if test="grade != null and grade != '' and grade != '全部'">AND c.grade = #{grade}</if>
+      <if test="classId != null and classId != '' and classId != '全部'">AND s.class_id = #{classId}</if>
+      <if test="keyword != null and keyword != ''">
+        AND (s.name LIKE CONCAT('%', #{keyword}, '%') OR s.sid LIKE CONCAT('%', #{keyword}, '%'))
+      </if>
+    </where>
+  </sql>
+
+  <sql id="filters">
+    <where>
+      <include refid="scope"/>
+      <if test="grade != null and grade != '' and grade != '全部'">
+        AND c.grade = #{grade}
+      </if>
+      <if test="classId != null and classId != '' and classId != '全部'">
+        AND s.class_id = #{classId}
+      </if>
+      <if test="status != null and status != '' and status != '全部'">
+        AND s.status = #{status}
+      </if>
+      <if test="absentAlert">
+        AND s.status = '在读' AND COALESCE(a.absent, 0) &gt;= 2
+      </if>
+      <if test="incomplete">
+        AND (s.guardian_phone IS NULL OR CHAR_LENGTH(s.guardian_phone) &lt;&gt; 11)
+      </if>
+      <if test="keyword != null and keyword != ''">
+        AND (s.name LIKE CONCAT('%', #{keyword}, '%')
+          OR s.sid LIKE CONCAT('%', #{keyword}, '%')
+          OR s.phone LIKE CONCAT('%', #{keyword}, '%')
+          OR s.guardian LIKE CONCAT('%', #{keyword}, '%')
+          OR s.guardian_phone LIKE CONCAT('%', #{keyword}, '%')
+          OR c.class_name LIKE CONCAT('%', #{keyword}, '%'))
+      </if>
+    </where>
+  </sql>
+
+  <sql id="orderBy">
+    <choose>
+      <when test="sort == 'name'">
+        ORDER BY s.name <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>, s.sid ASC
+      </when>
+      <when test="sort == 'classId'">
+        ORDER BY c.grade_index <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>,
+                 c.class_no <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>,
+                 s.sid ASC
+      </when>
+      <when test="sort == 'total'">
+        ORDER BY r.total <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>, s.sid ASC
+      </when>
+      <when test="sort == 'subject'">
+        ORDER BY COALESCE(sc_sort.score, 0) <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>, s.sid ASC
+      </when>
+      <otherwise>
+        ORDER BY s.sid <choose><when test="desc">DESC</when><otherwise>ASC</otherwise></choose>
+      </otherwise>
+    </choose>
+  </sql>
+
+  <select id="selectPage" resultType="com.mdzx.student.mapper.model.StudentRow">
+    WITH <include refid="cte"/>
+    SELECT <include refid="columns"/>
+    <include refid="joinsForSort"/>
+    <include refid="filters"/>
+    <include refid="orderBy"/>
+  </select>
+
+  <select id="selectRowById" resultType="com.mdzx.student.mapper.model.StudentRow">
+    WITH <include refid="cte"/>
+    SELECT <include refid="columns"/>
+    <include refid="joins"/>
+    WHERE s.id = #{id}
+  </select>
+
+  <select id="selectIdsOutsideScope" resultType="long">
+    SELECT id FROM student
+    WHERE id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    <if test="classIds != null">
+      AND class_id NOT IN
+      <foreach collection="classIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+    </if>
+  </select>
+
+  <select id="selectStats" resultType="com.mdzx.student.mapper.model.GradeStatsRow">
+    WITH <include refid="cte"/>
+    SELECT COUNT(*) AS student_count,
+           AVG(r.total) AS avg_total,
+           MAX(r.total) AS best_total,
+           COALESCE(SUM(r.total &gt;= #{passLine}), 0) AS pass_count,
+           COALESCE(SUM(r.total &gt;= #{excellentLine}), 0) AS excellent_count
+    <include refid="joins"/>
+    <include refid="gradeFilters"/>
+  </select>
+
+  <select id="selectTopByFilter" resultType="com.mdzx.student.mapper.model.StudentRow">
+    WITH <include refid="cte"/>
+    SELECT <include refid="columns"/>
+    <include refid="joins"/>
+    <include refid="gradeFilters"/>
+    ORDER BY r.total DESC, s.sid ASC
+    LIMIT 1
+  </select>
+
+  <select id="selectActiveStats" resultType="com.mdzx.student.mapper.model.GradeStatsRow">
+    WITH <include refid="cte"/>
+    SELECT COUNT(*) AS student_count,
+           AVG(r.total) AS avg_total,
+           MAX(r.total) AS best_total,
+           COALESCE(SUM(r.total &gt;= 0), 0) AS pass_count,
+           COALESCE(SUM(r.total &gt;= 0), 0) AS excellent_count
+    <include refid="joins"/>
+    <where>
+      s.status = '在读'
+      <include refid="scope"/>
+    </where>
+  </select>
+
+  <select id="selectById" resultType="com.mdzx.student.domain.Student">
+    SELECT id, sid, name, gender, class_id, status, phone, guardian, guardian_relation,
+           guardian_phone, birthday, enrollment_date, address, dorm, note, created_at, updated_at
+    FROM student
+    WHERE id = #{id}
+  </select>
+
+  <insert id="insert" parameterType="com.mdzx.student.domain.Student"
+          useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO student
+      (sid, name, gender, class_id, status, phone, guardian, guardian_relation,
+       guardian_phone, birthday, enrollment_date, address, dorm, note)
+    VALUES
+      (#{sid}, #{name}, #{gender}, #{classId}, #{status}, #{phone}, #{guardian}, #{guardianRelation},
+       #{guardianPhone}, #{birthday}, #{enrollmentDate}, #{address}, #{dorm}, #{note})
+  </insert>
+
+  <update id="update" parameterType="com.mdzx.student.domain.Student">
+    UPDATE student
+    SET sid = #{sid},
+        name = #{name},
+        gender = #{gender},
+        class_id = #{classId},
+        status = #{status},
+        phone = #{phone},
+        guardian = #{guardian},
+        guardian_relation = #{guardianRelation},
+        guardian_phone = #{guardianPhone},
+        birthday = #{birthday},
+        enrollment_date = #{enrollmentDate},
+        address = #{address},
+        dorm = #{dorm},
+        note = #{note}
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM student WHERE id = #{id}
+  </delete>
+
+  <delete id="deleteByIds">
+    DELETE FROM student WHERE id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </delete>
+
+  <select id="countBySid" resultType="int">
+    SELECT COUNT(*) FROM student
+    WHERE sid = #{sid}
+    <if test="excludeId != null">AND id &lt;&gt; #{excludeId}</if>
+  </select>
+
+  <select id="countAll" resultType="long">
+    SELECT COUNT(*) FROM student s
+    <where>
+      <include refid="scope"/>
+    </where>
+  </select>
+
+  <select id="countByStatus" resultType="long">
+    SELECT COUNT(*) FROM student s
+    <where>
+      s.status = #{status}
+      <include refid="scope"/>
+    </where>
+  </select>
+
+  <select id="countMissingGuardianPhone" resultType="long">
+    SELECT COUNT(*) FROM student s
+    <where>
+      (s.guardian_phone IS NULL OR CHAR_LENGTH(s.guardian_phone) &lt;&gt; 11)
+      <include refid="scope"/>
+    </where>
+  </select>
+
+  <select id="countAbsentAlert" resultType="long">
+    SELECT COUNT(*)
+    FROM student s
+    JOIN (
+      SELECT student_id, SUM(status = '缺勤') AS absent
+      FROM attendance_record
+      GROUP BY student_id
+    ) a ON a.student_id = s.id
+    <where>
+      s.status = '在读' AND a.absent &gt;= #{threshold}
+      <include refid="scope"/>
+    </where>
+  </select>
+
+  <select id="selectRecentMoves" resultType="com.mdzx.student.mapper.model.StudentRow">
+    WITH <include refid="cte"/>
+    SELECT <include refid="columns"/>
+    <include refid="joins"/>
+    <where>
+      s.status &lt;&gt; '在读'
+      <include refid="scope"/>
+    </where>
+    ORDER BY s.sid DESC
+    LIMIT #{size}
+  </select>
+
+  <select id="selectGradeAggregates" resultType="com.mdzx.student.mapper.model.GradeAggRow">
+    WITH <include refid="cte"/>
+    SELECT c.grade,
+           MIN(c.grade_index) AS grade_index,
+           COUNT(DISTINCT c.class_id) AS class_count,
+           COUNT(s.id) AS total_count,
+           COALESCE(SUM(s.status = '在读'), 0) AS active_count,
+           AVG(CASE WHEN s.status = '在读' THEN r.total END) AS avg_total,
+           AVG(CASE WHEN s.status = '在读' THEN
+                 (a.present + a.late) / NULLIF(a.present + a.late + a.absent + a.leave_cnt, 0) END) AS avg_rate
+    <include refid="joins"/>
+    <where>
+      <include refid="scope"/>
+    </where>
+    GROUP BY c.grade
+    ORDER BY grade_index
+  </select>
+
+  <delete id="deleteAll">
+    DELETE FROM student
+  </delete>
+</mapper>
